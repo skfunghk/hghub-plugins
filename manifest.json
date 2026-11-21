@@ -1,0 +1,20 @@
+{
+  "name": "skfunghk 的 HGhub 插件集",
+  "description": "Javtiful 与 Manko 两个点播源。需要 HGhub 0.0.4 及以上，并在 设置 → 插件与内容 打开「显示成人内容」。",
+  "plugins": [
+    {
+      "id": "javtiful.source",
+      "name": "Javtiful",
+      "version": "1.1.0",
+      "description": "分区 + 分类/频道/女优目录 + 搜索 + 签名 MP4 播放",
+      "url": "plugins/javtiful.source.js"
+    },
+    {
+      "id": "manko.source",
+      "name": "Manko",
+      "version": "1.1.0",
+      "description": "分区 + 分类/类型目录 + 搜索 + HLS 播放（含字幕轨）",
+      "url": "plugins/manko.source.js"
+    }
+  ]
+}
