@@ -20,6 +20,7 @@ https://raw.githubusercontent.com/skfunghk/hghub-plugins/main/manifest.json
 | --- | --- | --- |
 | `javtiful.source` 1.1.0 | 首页分区、分类目录、搜索、播放 | javtiful.com：视频分区(4) + 分类(21) + 频道(24) + 女优(24)；签名 MP4，Range 可拖动 |
 | `manko.source` 1.1.0 | 首页分区、分类目录、搜索、播放 | manko.fun：最热/最新/高评分/带字幕/随机 + 分类(3) + 类型(100)；HLS + vtt 字幕 |
+| `gimy.source` 1.0.0 | 分区、分类、搜索、详情、播放 | gimytv.io：電影/電視劇/動漫/綜藝四分区（可分页）；HLS 取流，无需 Cookie |
 | `local.kanju` 0.1.3 | 首页分区、分类、搜索、详情、播放 | 看剧AI：**kanju44.com / kanju.ai 双线路**，插件页可切换；多线路解析，签名请求由插件内计算 |
 
 两者都不需要登录，也不执行站点脚本：只发 HTTP 请求、解析 HTML/JSON。
