@@ -29,6 +29,20 @@
       "version": "1.0.0",
       "description": "Gimy TV（gimytv.io）：電影/電視劇/動漫/綜藝分區、搜尋、詳情與 HLS 播放",
       "url": "plugins/gimy.source.js"
+    },
+    {
+      "id": "cg91.source",
+      "name": "91吃瓜",
+      "version": "1.0.3",
+      "description": "91吃瓜（www.91cg1.com）：分区/分类/搜索/详情/HLS；修复：失败时如实回报 NETWORK，线路可切换",
+      "url": "plugins/cg91.source.js"
+    },
+    {
+      "id": "hlws.source",
+      "name": "51黑料",
+      "version": "1.0.1",
+      "description": "51黑料（51hlws.com）：分区/分类/搜索/详情/HLS；新增可切换线路",
+      "url": "plugins/hlws.source.js"
     }
   ]
 }
