@@ -43,6 +43,13 @@
       "version": "1.0.1",
       "description": "51黑料（51hlws.com）：分区/分类/搜索/详情/HLS；新增可切换线路",
       "url": "plugins/hlws.source.js"
+    },
+    {
+      "id": "anime1.source",
+      "name": "Anime1",
+      "version": "1.1.0",
+      "description": "Anime1.me：連載中/季度片庫、搜尋、集數與 MP4 直連（data-apireq 換址）",
+      "url": "plugins/anime1.source.js"
     }
   ]
 }
