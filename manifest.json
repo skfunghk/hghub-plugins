@@ -57,6 +57,13 @@
       "version": "1.0.0",
       "description": "GiriGiri 動畫（ani.girigirilove.com）：最新更新、搜尋、詳情與 m3u8/mp4 直鏈",
       "url": "plugins/girigiri.source.js"
+    },
+    {
+      "id": "ppp.source",
+      "name": "PPP.Porn",
+      "version": "1.0.0",
+      "description": "PPP.Porn 精選亞洲素人成人影片：最新上架、熱門、分類、搜尋與 HLS 直鏈（成人內容）",
+      "url": "plugins/ppp.source.js"
     }
   ]
 }
