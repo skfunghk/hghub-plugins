@@ -16,7 +16,7 @@
 export const meta = {
   id: 'huangdou.source',
   name: '黄桃短剧',
-  version: '1.0.0',
+  version: '1.0.1',
   protocol: 1,
   kind: 'source',
   description: '黄桃短剧（aihuangdou.com）AI 成人短剧 / 漫剧 / 魔改：分类、榜单、搜尋、分集与 HLS 直链。',
@@ -33,6 +33,15 @@ export const meta = {
 
 const SITE = 'https://aihuangdou.com';
 
+// 图床的封面不是明文图片：站点用 AES-128-CBC / NoPadding 加密，密钥来自 /cdn-config.js 的
+// imgEncKey / imgEncIV（16 字符 ASCII，Base64 后即下面两串）。宿主用 `aes-cbc` 变换原生解密。
+// 失效时抓 https://aihuangdou.com/cdn-config.js 换一次即可。
+const IMAGE_KEY = 'ZjVkOTY1ZGY3NTMzNjI3MA==';
+const IMAGE_IV = 'OTdiNjAzOTRhYmMyZmJlMQ==';
+const IMAGE_TRANSFORM = { type: 'aes-cbc', key: IMAGE_KEY, iv: IMAGE_IV, padding: 'none' };
+// pic.qnlycc.cn 在部分网络下不可达（实测 curl 连不上），同路径在 new/image 上返回同一份字节
+const IMAGE_HOSTS = { 'pic.qnlycc.cn': 'new.qnlycc.cn', 'pic.aluxvl.cn': 'new.qnlycc.cn' };
+
 export default hg => {
   const text = v => (v == null ? '' : String(v).trim());
   const decode = v =>
@@ -45,6 +54,17 @@ export default hg => {
       .replace(/&lt;/gi, '<')
       .replace(/&gt;/gi, '>')
       .replace(/&nbsp;/gi, ' ');
+
+  /** 封面：图床上的字节是加密的，必须带 aes-cbc 变换；站内 /static/ 资源是明文，原样给字符串 */
+  function coverRef(url) {
+    const value = text(url);
+    if (!value) return '';
+    if (/^\/static\//i.test(value)) return abs(value);
+    const m = /^https?:\/\/([^/]+)(\/.*)$/i.exec(abs(value));
+    if (!m) return abs(value);
+    const host = IMAGE_HOSTS[m[1].toLowerCase()] || m[1];
+    return { url: `https://${host}${m[2]}`, transform: IMAGE_TRANSFORM };
+  }
 
   const abs = u => {
     const s = text(u);
@@ -103,7 +123,7 @@ export default hg => {
       const cover = /class="poster-img"[^>]*data-src="([^"]+)"/.exec(window) || /data-src="([^"]+)"/.exec(window);
       const info = /class="card-info"[\s\S]{0,400}?<p>([\s\S]{0,120}?)<\/p>/.exec(window);
       const item = { id, title: decode(name[1]), type: 'series' };
-      if (cover) item.cover = abs(cover[1]);
+      if (cover) item.cover = coverRef(cover[1]);
       const remark = info ? decode(info[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')) : '';
       const episodes = /已更新至\s*(\d+)\s*集/.exec(remark) || /共\s*(\d+)\s*集/.exec(remark);
       if (episodes) item.remark = `${episodes[1]} 集`;
@@ -125,7 +145,7 @@ export default hg => {
       /class="hero-scene-img"[^>]*data-src="([^"]+)"/.exec(html);
     const desc = /name="description"\s+content="([^"]{1,400})"/.exec(html);
     const out = { title: name };
-    if (cover) out.cover = abs(cover[1]);
+    if (cover) out.cover = coverRef(cover[1]);
     if (desc) out.description = decode(desc[1]);
     return out;
   }

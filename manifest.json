@@ -68,7 +68,7 @@
     {
       "id": "huangdou.source",
       "name": "黄桃短剧",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "黄桃短剧（aihuangdou.com）AI 成人短剧/漫剧：分类、榜单、搜尋、分集与 HLS 直链（成人内容）",
       "url": "plugins/huangdou.source.js"
     }
