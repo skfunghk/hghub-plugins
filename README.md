@@ -34,3 +34,4 @@ https://raw.githubusercontent.com/skfunghk/hghub-plugins/main/manifest.json
 ## 免责
 
 仅供个人学习与自用。插件不含任何站点私有密钥，内容版权归各站点所有。
+| `chengguo.source` | 橙果短剧 | 1.0.3 | 浏览/搜索/分集/播放；封面走 `/_img` 解密代理 |

@@ -75,8 +75,8 @@
     {
       "id": "chengguo.source",
       "name": "橙果短剧",
-      "version": "1.0.0",
-      "description": "橙果短剧（chengguodj.com）AI 短剧/漫剧/魔改：浏览、搜索、分集与 HLS 直链；封面走站点解密代理（成人内容）",
+      "version": "1.0.3",
+      "description": "橙果短剧（chengguodj.com）：首页分区、频道分页、搜索、详情与 HLS 直连；接口走 AES+签名自解，封面走站点 /_img 解密代理（成人内容）",
       "url": "plugins/chengguo.source.js"
     }
   ]

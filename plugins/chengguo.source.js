@@ -1,258 +1,381 @@
-/**
- * 橙果短剧（chengguodj.com）HPP 1.0 内容源。
- *
- * 站点是 Nuxt 3，所有数据都在页面里的 `__NUXT_DATA__`（devalue 扁平数组，值之间靠下标互引）。
- * SSR 输出的 <img> 全是空壳（`van-image-load loading`），封面必须先解 payload 才拿得到；
- * 而封面原图是加密的，裸取只有 application/octet-stream —— 站点自己给了 `/ _img/<base64url>` 解密代理。
- *
- *   列表   GET /browse/page-N            → payload items[]: {slug, title, cover:{url, encrypted}, total_episodes}
- *   搜索   GET /search?q=<关键字>
- *   详情   GET /drama/<slug>             → 标题、封面
- *   分集   GET /play/<slug>/1            → payload episodes[]: {number, route}
- *   播放   GET /play/<slug>/<n>          → payload media.source_url（HLS，带 auth_key 时效）
- *   封面   GET /_img/<base64url(原图 URL)> → 解密后的 image/jpeg
- */
 export const meta = {
   id: 'chengguo.source',
   name: '橙果短剧',
-  version: '1.0.0',
+  version: '1.0.3',
   protocol: 1,
   kind: 'source',
-  description: '橙果短剧（chengguodj.com）AI 短剧/漫剧/魔改：浏览、搜索、分集与 HLS 直链；封面走站点解密代理。',
-  author: 'community',
+  description: '橙果短剧（chengguodj.com）：首页分区、五个频道分页、搜索、详情与 HLS 直连；接口走 AES+签名，插件内自解。',
   mature: true,
-  linkDomains: ['chengguodj.com', 'hls.ohjzmm.cn', 'pic.mmgbaa.cn'],
-  defaultHeaders: {
-    'User-Agent':
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-  },
-  timeouts: { read: 20, playback: 25 },
+  linkDomains: ['chengguodj.com', 'www.chengguodj.com', 'api2.chengguodj.com', 'hls.ohjzmm.cn', 'pic.gyezbp.cn', 'pic.mmgbaa.cn', 'imgpublic.ycomesc.live'],
+  timeouts: { read: 20, playback: 30 },
 };
 
 const SITE = 'https://chengguodj.com';
-const PAGE_SIZE = 30;
+const API = 'https://api2.chengguodj.com';
+const PLAIN_PIC_HOST = 'imgpublic.ycomesc.live';
+
+// 站点运行时下发的默认值（bundle 内的 fallback）
+const CRYPT_KEY = '2acf7e91e9864673';
+const CRYPT_IV = '1c29882d3ddfcfd6';
+const SIGN_KEY = '5589d41f92a597d016b037ac37db243d';
+const CRYPT_VER = 'v0';
+
+const CHANNELS = [
+  { code: 'yuanchuang', name: '橙果原创' },
+  { code: 'aiduanju', name: 'AI短剧' },
+  { code: 'zhenren', name: '真人短剧' },
+  { code: 'mogai', name: 'AI魔改' },
+  { code: 'manju', name: 'AI漫剧' },
+];
+
+const HOME_SECTIONS = [
+  { title: '热播榜', path: '/api/v1/dramas?page=1' },
+  { title: '橙果原创', path: '/api/v1/channels/yuanchuang?page=1' },
+  { title: 'AI短剧', path: '/api/v1/channels/aiduanju?page=1' },
+  { title: '真人短剧', path: '/api/v1/channels/zhenren?page=1' },
+  { title: 'AI魔改', path: '/api/v1/channels/mogai?page=1' },
+  { title: 'AI漫剧', path: '/api/v1/channels/manju?page=1' },
+];
+
+const DRAMA_RE = /^https?:\/\/(?:www\.)?chengguodj\.com\/(?:drama|play)\/([A-Za-z0-9\-_]+)/i;
+
+const norm = s => (typeof s === 'string' ? s : '');
+const trim = s => norm(s).replace(/\s+/g, ' ').trim();
+const pageNo = cursor => {
+  const n = Number(cursor);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+};
+
+const CRYPT_PIC_HOSTS = /(?:gyezbp\.cn|mmgbaa\.cn|chengguopic\.|cglive\.)/i;
+
+function plainPic(url) {
+  const raw = norm(url);
+  if (!/^https?:\/\//i.test(raw)) return '';
+  // 加密图床只吐 AES 密文，换成同路径的明文图床
+  return CRYPT_PIC_HOSTS.test(raw) ? raw.replace(/^https?:\/\/[^/]+/i, `https://${PLAIN_PIC_HOST}`) : raw;
+}
 
 export default hg => {
-  const text = v => (v == null ? '' : String(v).trim());
-  const decode = v =>
-    text(v)
-      .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
-      .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
-      .replace(/&amp;/gi, '&')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#039;|&apos;/gi, "'")
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&nbsp;/gi, ' ');
+  const utf8 = text => hg.codec.utf8Encode(text);
 
-  async function html(url, ctx, ttlSec = 120) {
+  function hexOf(bytes) {
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      out += b < 16 ? `0${b.toString(16)}` : b.toString(16);
+    }
+    return out;
+  }
+
+  function aesEncode(obj) {
+    const cipher = hg.crypto.aesEncrypt(
+      { mode: 'cbc', key: utf8(CRYPT_KEY), iv: utf8(CRYPT_IV), padding: 'pkcs7' },
+      utf8(JSON.stringify(obj)),
+    );
+    return hg.codec.base64Encode(cipher);
+  }
+
+  function aesDecode(text) {
+    const data = hg.codec.base64Decode(norm(text).replace(/ /g, '+'));
+    return hg.codec.utf8Decode(
+      hg.crypto.aesDecrypt({ mode: 'cbc', key: utf8(CRYPT_KEY), iv: utf8(CRYPT_IV), padding: 'pkcs7' }, data),
+    );
+  }
+
+  // sign = md5(sha256(sorted("k=v"&...) + sign_key))，sha256 取 hex
+  function signature(fields) {
+    const parts = Object.keys(fields)
+      .filter(k => k !== 'sign' && k !== '_ver' && fields[k] !== null && fields[k] !== undefined)
+      .sort()
+      .map(k => `${k}=${k === 'data' ? String(fields[k]).replace(/ /g, '+') : fields[k]}`);
+    const sha = hexOf(hg.crypto.digest('sha256', parts.join('&') + SIGN_KEY));
+    return hexOf(hg.crypto.digest('md5', sha));
+  }
+
+  async function apiCall(path, body, ctx, jsonBody) {
+    const headers = { Accept: 'application/json', Origin: SITE };
+    let payload;
+    if (jsonBody) {
+      headers['Content-Type'] = 'application/json';
+      payload = JSON.stringify(body || {});
+    } else {
+      const fields = {
+        _ver: CRYPT_VER,
+        data: aesEncode(body || {}),
+        timestamp: Math.floor(Date.now() / 1000),
+        client: 'ios',
+      };
+      fields.sign = signature(fields);
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      payload = ['_ver', 'client', 'data', 'sign', 'timestamp']
+        .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(fields[k])}`)
+        .join('&');
+    }
+
     const res = await hg.http.fetch({
-      url,
-      responseType: 'text',
-      headers: ttlSec >= 0 ? { Referer: `${SITE}/` } : {},
-      cache: ttlSec > 0 ? { ttlSec, staleIfErrorSec: 600 } : undefined,
-      signal: ctx && ctx.signal,
+      url: `${API}${path}`,
+      method: 'POST',
+      headers,
+      body: payload,
+      signal: ctx.signal,
     });
-    if (res.status === 404) throw new hg.PluginError('UPSTREAM_NOT_FOUND', '页面不存在');
-    if (!res.ok) throw new hg.PluginError('UPSTREAM_ERROR', `站点返回 ${res.status}`);
-    return text(res.data);
-  }
-
-  /** Nuxt 的 devalue payload：数组 + 下标互引，解成普通对象 */
-  function payload(source) {
-    const m = /<script[^>]*id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/.exec(source);
-    if (!m) throw new hg.PluginError('UPSTREAM_CHANGED', '页面里没有 __NUXT_DATA__');
-    let flat;
+    if (!res.ok) throw new hg.PluginError('UPSTREAM_ERROR', `接口返回 ${res.status}`);
+    let envelope;
     try {
-      flat = JSON.parse(m[1]);
-    } catch (e) {
-      throw new hg.PluginError('UPSTREAM_CHANGED', 'payload 不是合法 JSON');
+      envelope = JSON.parse(res.data);
+    } catch {
+      throw new hg.PluginError('UPSTREAM_CHANGED', '接口返回格式已变化');
     }
-    if (!Array.isArray(flat)) throw new hg.PluginError('UPSTREAM_CHANGED', 'payload 结构已变化');
-    const seen = new Set();
-    const resolve = (index, depth) => {
-      if (typeof index !== 'number' || index < 0 || index >= flat.length) return null;
-      if (depth > 16 || seen.has(index)) return null;
-      const value = flat[index];
-      if (value === null || typeof value !== 'object') return value;
-      seen.add(index);
-      let out;
-      if (Array.isArray(value)) {
-        out = value.map(item => resolve(item, depth + 1));
-      } else {
-        out = {};
-        for (const key of Object.keys(value)) out[key] = resolve(value[key], depth + 1);
+    if (!envelope || typeof envelope.data !== 'string') {
+      throw new hg.PluginError('UPSTREAM_CHANGED', '接口返回格式已变化');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(aesDecode(envelope.data));
+    } catch {
+      throw new hg.PluginError('UPSTREAM_CHANGED', '接口数据解密失败');
+    }
+    return parsed;
+  }
+
+  async function apiData(path, body, ctx, jsonBody) {
+    const parsed = await apiCall(path, body, ctx, jsonBody);
+    if (!parsed || parsed.success === false) {
+      const message = (parsed && parsed.error && parsed.error.message) || '接口请求失败';
+      throw new hg.PluginError('UPSTREAM_ERROR', message);
+    }
+    return parsed.data || {};
+  }
+
+  function coverOf(row) {
+    const cover = row && row.cover;
+    const url = typeof cover === 'string' ? cover : (cover && cover.url) || '';
+    const fallback = typeof cover === 'string' ? row.cover_fallback_url : cover && cover.fallback_url;
+    const raw = norm(url);
+    if (raw) {
+      // 图床只吐 AES 密文：pic.mmgbaa.cn 与 pic.gyezbp.cn 实测都返回 application/octet-stream
+      // （首字节 4f e8 97 a4），换到 imgpublic.ycomesc.live 也不通（连不上）。
+      // 站点的 /_img/<base64url> 会解密并直接返回真图，走它。
+      if (/^https?:\/\//i.test(raw) && CRYPT_PIC_HOSTS.test(raw)) {
+        return `${SITE}/_img/${hg.codec.base64Encode(raw, { urlSafe: true, pad: false })}`;
       }
-      seen.delete(index);
-      return out;
-    };
-    return resolve(0, 0);
-  }
-
-  /** 深度遍历 payload */
-  function* walk(node) {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) {
-      for (const item of node) yield* walk(item);
-      return;
+      return raw;
     }
-    yield node;
-    for (const key of Object.keys(node)) yield* walk(node[key]);
+    const fb = norm(fallback);
+    if (!fb) return '';
+    return /^https?:\/\//i.test(fb) ? fb : `${SITE}${fb.charAt(0) === '/' ? '' : '/'}${fb}`;
   }
 
-  /** 封面：原图加密，改走站点的 /_img 解密代理 */
-  function cover(url) {
-    const value = text(url);
-    if (!value) return '';
-    if (value.startsWith('/')) return SITE + value;
-    return `${SITE}/_img/${hg.codec.base64Encode(value, { urlSafe: true, pad: false })}`;
-  }
-
-  function card(item) {
-    const out = { id: item.slug, title: decode(item.title || item.name || ''), type: 'series' };
-    if (item.cover && item.cover.url) out.cover = cover(item.cover.url);
-    const episodes = Number(item.total_episodes || item.latest_episode_number || 0);
-    if (episodes > 0) out.remark = `${episodes} 集`;
-    const tags = Array.isArray(item.tags) ? item.tags.map(t => text(t && t.name)).filter(Boolean) : [];
-    if (tags.length) out.tags = tags.slice(0, 6);
-    return out.title && out.id ? out : null;
-  }
-
-  function cardsFrom(root) {
-    const byslug = new Map();
-    for (const node of walk(root)) {
-      if (typeof node.slug !== 'string' || !node.slug) continue;
-      // 标签对象也是 {slug, name}，作品才有 title；不区分会把「都市邻里」这种标签当成剧
-      if (typeof node.title !== 'string' || !node.title) continue;
-      const item = card(node);
-      if (item && !byslug.has(item.id)) byslug.set(item.id, item);
+  function itemOf(row) {
+    if (!row || !row.slug) return null;
+    const item = { id: trim(row.slug), title: trim(row.title), type: 'short' };
+    if (!item.title) return null;
+    const cover = coverOf(row);
+    if (cover) item.cover = cover;
+    const intro = trim(row.intro);
+    if (intro) item.description = intro.slice(0, 2000);
+    const channel = row.channel || row.line;
+    if (channel && channel.name) item.badge = trim(channel.name).slice(0, 8);
+    const total = Number(row.total_episode_count);
+    if (Number.isInteger(total) && total > 0) item.totalEpisodes = total;
+    const published = Number(row.published_episode_count);
+    if (Number.isInteger(published) && published > 0) item.episodeCount = published;
+    const tags = [];
+    if (Array.isArray(row.tags)) {
+      for (const t of row.tags) {
+        const name = trim(typeof t === 'string' ? t : t && t.name);
+        if (name && name.length <= 30 && tags.indexOf(name) < 0) tags.push(name);
+      }
     }
-    return [...byslug.values()];
+    if (tags.length) item.tags = tags.slice(0, 20);
+    return item;
   }
 
-  function episodesFrom(root) {
-    let best = [];
-    for (const node of walk(root)) {
-      if (!Array.isArray(node.episodes)) continue;
-      const list = node.episodes.filter(ep => ep && typeof ep.number === 'number');
-      if (list.length > best.length) best = list;
+  function itemsOf(data) {
+    const rows = Array.isArray(data.items) ? data.items : Array.isArray(data.dramas) ? data.dramas : [];
+    const out = [];
+    const seen = new Set();
+    for (const row of rows) {
+      const item = itemOf(row);
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+      out.push(item);
     }
-    return best
-      .slice()
-      .sort((a, b) => a.number - b.number)
-      .map(ep => ({ id: String(ep.number), index: ep.number, label: `第 ${ep.number} 集` }));
+    return out;
   }
 
-  function mediaFrom(root) {
-    for (const node of walk(root)) {
-      if (typeof node.source_url === 'string' && node.source_url) return node;
+  async function probeMedia(url, ctx) {
+    try {
+      let res = await hg.http.fetch({ url, method: 'HEAD', signal: ctx.signal });
+      if (!res.ok) {
+        res = await hg.http.fetch({ url, headers: { Range: 'bytes=0-1' }, signal: ctx.signal });
+      }
+      return { res };
+    } catch (error) {
+      return { res: null, error };
     }
-    return null;
   }
-
-  const LISTS = [
-    { id: 'latest', label: '最新更新', url: `${SITE}/browse` },
-    { id: 'aiduanju', label: 'AI短剧', url: `${SITE}/aiduanju` },
-    { id: 'vmake', label: '原创魔改', url: `${SITE}/vmake` },
-  ];
 
   return {
     home: {
       async getSections(params, ctx) {
         const sections = [];
-        for (const row of LISTS) {
-          if (ctx && ctx.signal && ctx.signal.aborted) throw new hg.PluginError('CANCELLED', '已取消');
-          try {
-            const items = cardsFrom(payload(await html(row.url, ctx, 300)));
-            if (items.length) sections.push({ id: row.id, title: row.label, layout: 'grid', items });
-          } catch (e) {
-            if (e && e.code === 'CANCELLED') throw e;
-          }
+        for (const sec of HOME_SECTIONS) {
+          const data = await apiData(sec.path, {}, ctx, false);
+          const items = itemsOf(data);
+          if (!items.length) continue;
+          sections.push({ id: `s${sections.length}`, title: sec.title, layout: 'grid', items });
         }
-        if (!sections.length) throw new hg.PluginError('UPSTREAM_CHANGED', '首页没有取到任何条目');
+        if (!sections.length) throw new hg.PluginError('UPSTREAM_CHANGED', '首页没有取到内容');
         return { items: sections, next: null };
       },
     },
 
     catalog: {
       async getCategories() {
-        return LISTS.map(row => ({ id: row.id, label: row.label }));
+        return [{ id: 'all', label: '全部' }].concat(CHANNELS.map(c => ({ id: c.code, label: c.name })));
       },
+
       async list(params, ctx) {
-        const id = text(params && params.categoryId) || 'latest';
-        const pageNo = Math.max(1, Number(params && (params.page || params.cursor)) || 1);
-        const row = LISTS.find(x => x.id === id) || LISTS[0];
-        const url = pageNo > 1 ? `${row.url}/page-${pageNo}` : row.url;
-        const items = cardsFrom(payload(await html(url, ctx, 120)));
-        return { items, next: items.length >= PAGE_SIZE ? String(pageNo + 1) : null };
+        const id = trim(params.categoryId) || 'all';
+        if (id !== 'all' && !CHANNELS.some(c => c.code === id)) {
+          throw new hg.PluginError('INVALID_ARGUMENT', '分类 ID 不合法');
+        }
+        const want = pageNo(params.cursor);
+        const path = id === 'all'
+          ? `/api/v1/dramas?page=${want}`
+          : `/api/v1/channels/${id}?page=${want}`;
+        let data;
+        try {
+          data = await apiData(path, {}, ctx, false);
+        } catch (error) {
+          // 频道只有一页时翻过头会 404，按没有更多处理
+          if (want > 1) return { items: [], next: null };
+          throw error;
+        }
+        const items = itemsOf(data);
+        const out = { items };
+        const page = data.pagination || {};
+        const totalPages = Number(page.total_pages);
+        if (items.length && Number.isFinite(totalPages) && totalPages > want) out.next = String(want + 1);
+        return out;
       },
     },
 
     search: {
       async search(params, ctx) {
-        const query = text(params && params.query);
-        if (!query) throw new hg.PluginError('INVALID_ARGUMENT', '缺少搜索词');
-        const source = await html(`${SITE}/search?q=${encodeURIComponent(query)}`, ctx, 60);
-        return { items: cardsFrom(payload(source)), next: null };
+        const query = trim(params.query);
+        if (!query) return { items: [], next: null };
+        const want = pageNo(params.cursor);
+        const path = `/api/v1/search?q=${encodeURIComponent(query)}&page=${want}`;
+        let data;
+        try {
+          data = await apiData(path, {}, ctx, false);
+        } catch (error) {
+          if (want > 1) return { items: [], next: null };
+          throw error;
+        }
+        const items = itemsOf(data);
+        const out = { items };
+        const page = data.pagination || {};
+        if (items.length && page.dramas_has_more) out.next = String(want + 1);
+        return out;
       },
     },
 
     media: {
       async getDetail(params, ctx) {
-        const slug = text(params && params.id);
-        if (!/^[A-Za-z0-9-]+$/.test(slug)) throw new hg.PluginError('INVALID_ARGUMENT', '作品 ID 不合法');
-        const detailRoot = payload(await html(`${SITE}/drama/${slug}`, ctx, 300));
-        const found = cardsFrom(detailRoot).find(item => item.id === slug) ||
-          { id: slug, title: slug, type: 'series' };
+        const id = trim(params.id);
+        if (!/^[A-Za-z0-9\-_]+$/.test(id)) throw new hg.PluginError('INVALID_ARGUMENT', '作品 ID 不合法');
+        const data = await apiData(`/api/v1/dramas/${encodeURIComponent(id)}`, {}, ctx, false);
+        if (!data.slug && !data.title) throw new hg.PluginError('UPSTREAM_CHANGED', '详情结构已变化');
 
-        // 分集表在播放页的 payload 里（详情页只有推荐位）
-        let episodes = episodesFrom(detailRoot);
-        if (!episodes.length) {
-          try {
-            episodes = episodesFrom(payload(await html(`${SITE}/play/${slug}/1`, ctx, 180)));
-          } catch (e) {
-            if (e && e.code === 'CANCELLED') throw e;
+        const detail = itemOf({ ...data, slug: data.slug || id }) || { id, title: id, type: 'short' };
+        detail.type = 'short';
+
+        const tags = [];
+        if (Array.isArray(data.tags)) {
+          for (const t of data.tags) {
+            const name = trim(typeof t === 'string' ? t : t && t.name);
+            if (name && name.length <= 30 && tags.indexOf(name) < 0) tags.push(name);
           }
         }
-        if (!episodes.length) throw new hg.PluginError('CONTENT_LOCKED', '这个作品还没有分集');
+        const channelName = trim(data.channel && data.channel.name);
+        if (channelName && tags.indexOf(channelName) < 0) tags.unshift(channelName);
+        if (tags.length) detail.tags = tags.slice(0, 20);
+        if (data.serial_status === 'completed' || data.status === 'completed') detail.status = 'finished';
+        else if (data.serial_status === 'ongoing' || data.status === 'ongoing') detail.status = 'ongoing';
 
-        const out = {
-          id: slug,
-          title: found.title,
-          type: 'series',
-          playlists: [{ id: 'main', label: '線路', episodes }],
-        };
-        if (found.cover) out.cover = found.cover;
-        if (found.tags) out.tags = found.tags;
-        const head = /<title>([\s\S]{1,120}?)<\/title>/i.exec(await html(`${SITE}/drama/${slug}`, ctx, 300));
-        if (head) {
-          const name = decode(head[1])
-            .replace(/\s*[-|｜].*$/, '')
-            .replace(/(?:在线观看|線上看|完整剧集|剧情简介).*$/, '')
-            .trim();
-          if (name) out.title = name;
+        const rows = Array.isArray(data.episodes) ? data.episodes : [];
+        const episodes = [];
+        for (const row of rows) {
+          const number = Number(row.number);
+          if (!Number.isFinite(number) || number < 0) continue;
+          const index = episodes.length + 1;
+          const ep = { id: String(number), index, label: trim(row.title) || String(number) };
+          const dur = Number(row.duration_seconds);
+          if (Number.isFinite(dur) && dur > 0) ep.durationSec = dur;
+          episodes.push(ep);
         }
-        return out;
+        if (!episodes.length) throw new hg.PluginError('CONTENT_LOCKED', '这部剧还没有可播放的分集');
+        detail.playlists = [{ id: 'main', label: '正片', kind: 'main', episodes }];
+        if (Number.isInteger(Number(data.total_episode_count))) detail.totalEpisodes = Number(data.total_episode_count);
+        detail.episodeCount = episodes.length;
+        return detail;
       },
 
       async resolvePlayback(params, ctx) {
-        const slug = text((params && params.mediaId) || '');
-        const episodeId = text(params && params.episodeId);
-        if (!/^[A-Za-z0-9-]+$/.test(slug)) throw new hg.PluginError('INVALID_ARGUMENT', '缺少作品 ID');
-        if (!/^\d+$/.test(episodeId)) throw new hg.PluginError('INVALID_ARGUMENT', '分集 ID 是集号');
-        const source = await html(`${SITE}/play/${slug}/${episodeId}`, { signal: ctx && ctx.signal }, 0);
-        const media = mediaFrom(payload(source));
-        if (!media) throw new hg.PluginError('CONTENT_LOCKED', '这一集没有可播放地址');
-        return {
-          streams: [{
-            url: media.source_url,
-            kind: 'media',
-            format: /\.m3u8(\?|$)/i.test(media.source_url) ? 'hls' : 'progressive',
-            label: `第 ${episodeId} 集`,
-            headers: { Referer: `${SITE}/`, Origin: SITE },
-          }],
-        };
+        const id = trim(params.mediaId);
+        if (!/^[A-Za-z0-9\-_]+$/.test(id)) throw new hg.PluginError('INVALID_ARGUMENT', '作品 ID 不合法');
+        const episode = trim(params.episodeId);
+        if (!/^\d+$/.test(episode)) throw new hg.PluginError('INVALID_ARGUMENT', '分集 ID 不合法');
+
+        // 取播放地址的接口偶发 503，重试一次再判失败
+        const path = `/api/v1/dramas/${encodeURIComponent(id)}/episodes/${episode}`;
+        let data;
+        let lastError = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            data = await apiData(path, {}, ctx, true);
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+        if (lastError) {
+          hg.log.warn(`取流失败：${lastError && lastError.message}`);
+          if (lastError instanceof hg.PluginError) {
+            throw new hg.PluginError('CONTENT_LOCKED', '这一集暂时取不到地址，换一集试试');
+          }
+          throw lastError;
+        }
+
+        const media = data.media || {};
+        const url = trim(media.source_url);
+        if (!/^https?:\/\//i.test(url)) throw new hg.PluginError('CONTENT_LOCKED', '这一集没有播放地址');
+
+        const probe = await probeMedia(url, ctx);
+        if (probe.res && !probe.res.ok) {
+          throw new hg.PluginError('CONTENT_LOCKED', `取流地址不可用（${probe.res.status}）`);
+        }
+        if (!probe.res) hg.log.warn('取流地址探测失败，直接返回上游地址');
+
+        const headers = (probe.res && probe.res.headers) || {};
+        const finalUrl = (probe.res && probe.res.url) || url;
+        const contentType = norm(headers['content-type']).toLowerCase();
+        const isHls = norm(media.format) === 'hls'
+          || /\.m3u8(\?|$)/i.test(finalUrl)
+          || /mpegurl/.test(contentType);
+
+        return { streams: [{ url: finalUrl, kind: 'media', format: isHls ? 'hls' : 'progressive' }] };
+      },
+
+      async matchUrl(params) {
+        const m = norm(params.url).match(DRAMA_RE);
+        if (!m) return null;
+        const play = norm(params.url).match(/\/play\/[A-Za-z0-9\-_]+\/(\d+)/i);
+        return play ? { mediaId: m[1], episodeId: play[1] } : { mediaId: m[1] };
       },
     },
   };
