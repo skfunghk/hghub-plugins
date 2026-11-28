@@ -22,10 +22,10 @@
 export const meta = {
   id: 'supjav.source',
   name: 'SupJav',
-  version: '0.1.0',
+  version: '0.2.1',
   protocol: 1,
   kind: 'source',
-  description: 'SupJav（supjav.com）目录、搜索、详情与标签；播放解析待定。需自备 Cloudflare 通行 Cookie。',
+  description: 'SupJav（supjav.com）目录、搜索、详情与标签；支持网页验证 / 粘贴 Cookie 两种过 Cloudflare 方式。播放解析待定。',
   author: 'community',
   mature: true,
   linkDomains: ['supjav.com', 'www.supjav.com', 'img.supjav.com'],
@@ -60,6 +60,8 @@ const CATEGORIES = [
   { id: 'reducing-mosaic', label: 'Reducing Mosaic' },
   { id: 'amateur', label: 'Amateur' },
 ];
+// 网页验证成功后，宿主会用它登录窗口的真实 UA 覆盖本插件的 User-Agent（cf_clearance 与 UA 绑定）。
+// 这个默认值只在「手工粘贴 Cookie」路径下生效：那时必须填自己浏览器的 UA。
 const DEFAULT_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -88,6 +90,7 @@ export default hg => {
   };
 
   const clearance = text(hg.settings && hg.settings.get && hg.settings.get('cf_clearance'));
+  // 手工路径用设置里的 UA；网页验证路径由宿主按会话 UA 覆盖，这里不用管
   const ua = text(hg.settings && hg.settings.get && hg.settings.get('user_agent')) || DEFAULT_UA;
 
   // 把用户贴的 Cookie 放进宿主 Cookie 罐：之后所有 origin 匹配的请求自动携带
@@ -211,7 +214,85 @@ export default hg => {
     return null;
   }
 
+  const hasWebLogin = !!(hg.env && Array.isArray(hg.env.features) && hg.env.features.includes('webview'));
+
+  /** 访问一次首页判断 Cloudflare 是否已放行 */
+  async function verify(ctx) {
+    const body = await page(base() + '/', ctx, 0);
+    const h1 = /<div class="post"/.test(body);
+    if (!h1) throw new hg.PluginError('AUTH_INVALID', '站点没有返回正常页面，请稍后重试');
+    return true;
+  }
+
+  const auth = {
+    getMethods() {
+      const methods = [];
+      if (hasWebLogin) {
+        methods.push({ id: 'web', label: '网页验证（通过 Cloudflare）' });
+      }
+      methods.push({
+        id: 'cookie',
+        label: '粘贴 cf_clearance',
+        form: {
+          title: '从浏览器复制 cf_clearance',
+          description: '在浏览器通过 supjav.com 验证后，复制 Cookie 里的 cf_clearance；UA 必须与取得它的浏览器一致。',
+          submitLabel: '保存并验证',
+          fields: [
+            { key: 'cf_clearance', type: 'text', label: 'cf_clearance', required: true },
+            { key: 'user_agent', type: 'text', label: 'User-Agent', required: true },
+          ],
+        },
+      });
+      return { methods };
+    },
+
+    async submit(params, ctx) {
+      const method = text(params && params.methodId);
+      const values = (params && params.values) || {};
+      if (method === 'web') {
+        if (!hasWebLogin) throw new hg.PluginError('UNSUPPORTED', '当前平台没有网页登录窗口');
+        await hg.webview.open({
+          url: base() + '/',
+          title: '通过 Cloudflare 验证',
+          doneWhen: { cookieNames: ['cf_clearance'] },
+          timeoutSec: 300,
+        });
+        await verify(ctx);
+        return { status: 'ok', user: { id: 'cloudflare', name: 'Cloudflare 已验证' } };
+      }
+      if (method === 'cookie') {
+        const clearance = text(values.cf_clearance);
+        const agent = text(values.user_agent);
+        if (!clearance || !agent) throw new hg.PluginError('AUTH_INVALID', '两栏都要填');
+        await hg.cookies.set({
+          url: base() + '/',
+          cookie: { name: 'cf_clearance', value: clearance, domain: '.supjav.com', path: '/', secure: true, httpOnly: true },
+        });
+        await hg.storage.set('user_agent', agent);
+        await verify(ctx);
+        return { status: 'ok', user: { id: 'cloudflare', name: 'Cloudflare 已验证' } };
+      }
+      throw new hg.PluginError('INVALID_ARGUMENT', '未知的登录方式');
+    },
+
+    async getProfile(params, ctx) {
+      try {
+        await verify(ctx);
+        return { id: 'cloudflare', name: 'Cloudflare 已验证' };
+      } catch (error) {
+        if (error && error.code === 'AUTH_REQUIRED') return null;
+        throw error;
+      }
+    },
+
+    async logout() {
+      await hg.cookies.clear({ url: base() + '/' });
+    },
+  };
+
   return {
+    auth,
+
     endpoints: {
       list() {
         return [{ id: 'official', url: OFFICIAL, label: '官方站点' }];

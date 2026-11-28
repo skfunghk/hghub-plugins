@@ -82,8 +82,8 @@
     {
       "id": "supjav.source",
       "name": "SupJav",
-      "version": "0.1.0",
-      "description": "SupJav（supjav.com）目录、搜索、详情与标签；播放解析待定，需自备 Cloudflare 通行 Cookie（成人内容）",
+      "version": "0.2.1",
+      "description": "SupJav（supjav.com）目录、搜索、详情；支持网页验证 / 粘贴 Cookie 过 Cloudflare；播放解析待定（成人内容）",
       "url": "plugins/supjav.source.js"
     }
   ]
